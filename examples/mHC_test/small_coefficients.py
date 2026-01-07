@@ -29,11 +29,9 @@ def ref_compute(H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r, n=4):
     return new_H
 
 @tl.jit(pass_configs={tl.PassConfigKey.TL_ENABLE_FAST_MATH: True,})
-def fused_small_coefficients(n=4, dtype=T.float32):
+def fused_small_coefficients(n=4, dtype=T.float32, THREADS_PER_BLOCK = 128, TOKENS_PER_BLOCK = 32):
     num_tokens = T.symbolic("num_tokens")
     total_dim = n * n + 2 * n  # 24
-    # THREADS_PER_BLOCK = 256
-    TOKENS_PER_BLOCK = 32
 
     @T.prim_func
     def fused_small_coefficients_kernel(
@@ -45,21 +43,18 @@ def fused_small_coefficients(n=4, dtype=T.float32):
         r: T.Tensor((num_tokens,), dtype),
         H_out: T.Tensor((num_tokens, total_dim), dtype),
     ):
-        # Grid: ceil(num_tokens / TOKENS_PER_BLOCK)
-        with T.Kernel(T.ceildiv(num_tokens, TOKENS_PER_BLOCK), threads=TOKENS_PER_BLOCK) as bx:
-            tx = T.get_thread_binding()
-            token_id = bx * TOKENS_PER_BLOCK + tx
-
-            if token_id < num_tokens:
-                a_pre, a_post, a_res = alpha_l_pre[0], alpha_l_post[0], alpha_l_res[0]
-                scale = 1.0 / r[token_id]
-                for dim_id in T.unroll(n):
-                    H_out[token_id, dim_id] = T.sigmoid(a_pre * scale * H[token_id, dim_id] + b_l[dim_id])
-                for dim_id in T.unroll(n, 2 * n):
-                    H_out[token_id, dim_id] = T.sigmoid(a_post * scale * H[token_id, dim_id] + b_l[dim_id]) * T.cast(2.0, dtype)
-                for dim_id in T.unroll(2 * n, total_dim):
-                    H_out[token_id, dim_id] = a_res * scale * H[token_id, dim_id] + b_l[dim_id]
-
+        with T.Kernel(T.ceildiv(num_tokens, TOKENS_PER_BLOCK), threads=THREADS_PER_BLOCK) as bx:
+            tid_start = bx * TOKENS_PER_BLOCK
+            a_pre, a_post, a_res = alpha_l_pre[0], alpha_l_post[0], alpha_l_res[0]     
+            for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
+                H_out[tid_start + lid, dim_id] = T.sigmoid(
+                    a_pre / r[tid_start + lid] * H[tid_start + lid, dim_id] + b_l[dim_id])
+            for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
+                H_out[tid_start + lid, dim_id + n] = T.sigmoid(
+                    a_post / r[tid_start + lid] * H[tid_start + lid, dim_id + n] + b_l[dim_id + n]) * T.cast(2.0, dtype)
+            for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n * n):
+                H_out[tid_start + lid, dim_id + 2 * n] = \
+                    a_res / r[tid_start + lid] * H[tid_start + lid, dim_id + 2 * n] + b_l[dim_id + 2 * n]
     return fused_small_coefficients_kernel
 
 def main(num_tokens = 16 * 1024):

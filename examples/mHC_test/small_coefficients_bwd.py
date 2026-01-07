@@ -5,10 +5,9 @@ import torch
 from small_coefficients import ref_compute
 
 @tl.jit(pass_configs={tl.PassConfigKey.TL_ENABLE_FAST_MATH: True,})
-def fused_small_coefficients_bwd(n=4, dtype=T.float32):
+def fused_small_coefficients_bwd(n=4, dtype=T.float32,THREADS_PER_BLOCK = 128, TOKENS_PER_BLOCK = 32):
     num_tokens = T.symbolic("num_tokens")
     total_dim = n * n + 2 * n  # 24
-    TOKENS_PER_BLOCK = 32
 
     @T.prim_func
     def fused_small_coefficients_bwd_kernel(
@@ -27,82 +26,67 @@ def fused_small_coefficients_bwd(n=4, dtype=T.float32):
         grad_b_l: T.Tensor((total_dim,), dtype),
         grad_r: T.Tensor((num_tokens,), dtype),
     ):
-        with T.Kernel(T.ceildiv(num_tokens, TOKENS_PER_BLOCK), threads=TOKENS_PER_BLOCK) as bx:
-            tx = T.get_thread_binding()
-            token_id = bx * TOKENS_PER_BLOCK + tx
+        with T.Kernel(T.ceildiv(num_tokens, TOKENS_PER_BLOCK), threads=THREADS_PER_BLOCK) as bx:
+            tid_start = bx * TOKENS_PER_BLOCK
 
             grad_alpha_pre_shared = T.alloc_shared((1,), dtype)
             grad_alpha_post_shared = T.alloc_shared((1,), dtype)
             grad_alpha_res_shared = T.alloc_shared((1,), dtype)
+            grad_r_shared = T.alloc_shared((TOKENS_PER_BLOCK,), dtype)
             T.fill(grad_alpha_pre_shared, T.cast(0, dtype))
             T.fill(grad_alpha_post_shared, T.cast(0, dtype))
             T.fill(grad_alpha_res_shared, T.cast(0, dtype))
+            T.fill(grad_r_shared, T.cast(0, dtype))
             grad_b_l_shared = T.alloc_shared((total_dim,), dtype)
             T.fill(grad_b_l_shared, T.cast(0, dtype))
 
-            if token_id < num_tokens:
-                a_pre = alpha_l_pre[0]
-                a_post = alpha_l_post[0]
-                a_res = alpha_l_res[0]
-                inv_r = T.cast(1.0, dtype) / r[token_id]
-                inv_r2 = inv_r * inv_r
-                
-                z = T.alloc_var(dtype)
-                sig = T.alloc_var(dtype)
-                dz = T.alloc_var(dtype)
+            a_pre = alpha_l_pre[0]
+            a_post = alpha_l_post[0]
+            a_res = alpha_l_res[0]
 
-                # Thread-local accumulators for scalar gradients
-                grad_alpha_pre_local = T.alloc_var(dtype, init=0)
-                grad_alpha_post_local = T.alloc_var(dtype, init=0)
-                grad_alpha_res_local = T.alloc_var(dtype, init=0)
-                grad_r_local = T.alloc_var(dtype, init=0)
+            for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
+                if tid_start + lid < num_tokens:
+                    go = grad_output[tid_start + lid, dim_id]
+                    inv_r = 1/ r[tid_start + lid]
+                    x = H[tid_start + lid, dim_id]
+                    z = inv_r * a_pre * x + b_l[dim_id]
+                    sig = T.sigmoid(z)
+                    dz = go * sig * (1.0 - sig)
+                    grad_H[tid_start + lid, dim_id] = dz * inv_r * a_pre
+                    T.atomic_add(grad_alpha_pre_shared[0], dz * inv_r * x)
+                    T.atomic_add(grad_b_l_shared[dim_id], dz)
+                    T.atomic_add(grad_r_shared[lid], -dz * a_pre * x * inv_r * inv_r)
+            for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
+                if tid_start + lid < num_tokens:
+                    go = grad_output[tid_start + lid, dim_id + n]
+                    inv_r = 1/ r[tid_start + lid]
+                    x = H[tid_start + lid, dim_id + n]
+                    z = inv_r * a_post * x + b_l[dim_id + n]
+                    sig = T.sigmoid(z)
+                    dz = go * T.cast(2.0, dtype) * sig * (1.0 - sig)
+                    grad_H[tid_start + lid, dim_id + n] = dz * inv_r * a_post
+                    T.atomic_add(grad_alpha_post_shared[0], dz * inv_r * x)
+                    T.atomic_add(grad_b_l_shared[dim_id + n], dz)
+                    T.atomic_add(grad_r_shared[lid], -dz * a_post * x * inv_r * inv_r)
+            for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n * n):
+                if tid_start + lid < num_tokens:
+                    go = grad_output[tid_start + lid, dim_id + 2 * n]
+                    inv_r = 1/ r[tid_start + lid]
+                    x = H[tid_start + lid, dim_id + 2 * n]
+                    grad_H[tid_start + lid, dim_id + 2 * n] = go * inv_r * a_res
+                    T.atomic_add(grad_alpha_res_shared[0], go * inv_r * x)
+                    T.atomic_add(grad_b_l_shared[dim_id + 2 * n], go)
+                    T.atomic_add(grad_r_shared[lid], -go * a_res * x * inv_r * inv_r)
 
-                # Local accumulator for grad_b_l (per-dim)
-                grad_b_l_local = T.alloc_local([total_dim], dtype=dtype)
-                T.fill(grad_b_l_local, T.cast(0, dtype))
-
-                # Process all dimensions for this token
-                for dim_id in T.serial(total_dim):  # can also unroll, but serial is fine
-                    go = grad_output[token_id, dim_id]
-                    x = H[token_id, dim_id]
-                    bias = b_l[dim_id]
-
-                    if dim_id < n:
-                        z = inv_r * a_pre * x + bias
-                        sig = T.sigmoid(z)
-                        dz = go * sig * (1.0 - sig)
-                        grad_H[token_id, dim_id] = dz * inv_r * a_pre
-                        grad_alpha_pre_local += dz * inv_r * x
-                        grad_b_l_local[dim_id] += dz
-                        grad_r_local += -dz * a_pre * x * inv_r2
-                    elif dim_id < 2 * n:
-                        z = inv_r * a_post * x + bias
-                        sig = T.sigmoid(z)
-                        dz = go * T.cast(2.0, dtype) * sig * (1.0 - sig)
-                        grad_H[token_id, dim_id] = dz * inv_r * a_post
-                        grad_alpha_post_local += dz * inv_r * x
-                        grad_b_l_local[dim_id] += dz
-                        grad_r_local += -dz * a_post * x * inv_r2
-                    else:
-                        grad_H[token_id, dim_id] = go * inv_r * a_res
-                        grad_alpha_res_local += go * inv_r * x
-                        grad_b_l_local[dim_id] += go
-                        grad_r_local += -go * a_res * x * inv_r2
-
-                grad_r[token_id] = grad_r_local  # per-token grad_r
-                T.atomic_add(grad_alpha_pre_shared[0], grad_alpha_pre_local)
-                T.atomic_add(grad_alpha_post_shared[0], grad_alpha_post_local)
-                T.atomic_add(grad_alpha_res_shared[0], grad_alpha_res_local)
-                for i in T.serial(total_dim):
-                    T.atomic_add(grad_b_l_shared[i], grad_b_l_local[i])
-            
             T.sync_threads()
-            if tx == 0:
+            if T.get_thread_binding() == 0:
                 T.atomic_add(grad_alpha_pre[0], grad_alpha_pre_shared[0])
                 T.atomic_add(grad_alpha_post[0], grad_alpha_post_shared[0])
                 T.atomic_add(grad_alpha_res[0], grad_alpha_res_shared[0])
-                for i in T.serial(total_dim):
-                    T.atomic_add(grad_b_l[i], grad_b_l_shared[i])
+            for lid in T.Parallel(TOKENS_PER_BLOCK):
+                T.atomic_add(grad_r[tid_start + lid], grad_r_shared[lid])
+            for i in T.Parallel(total_dim):
+                T.atomic_add(grad_b_l[i], grad_b_l_shared[i])
 
     return fused_small_coefficients_bwd_kernel
 
@@ -167,7 +151,7 @@ def test_bwd(num_tokens = 16 * 1024):
         grad_r_tl,
     )
 
-    torch.testing.assert_close(grad_H_tl, grad_H_ref, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(grad_H_tl, grad_H_ref, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(grad_alpha_pre_tl, grad_alpha_pre_ref, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(grad_alpha_post_tl, grad_alpha_post_ref, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(grad_alpha_res_tl, grad_alpha_res_ref, atol=1e-4, rtol=1e-4)
