@@ -17,7 +17,9 @@ def fused_small_coefficients_bwd(n=4, dtype=T.float32,THREADS_PER_BLOCK = 128, T
         alpha_l_res: T.Tensor((1,), dtype),
         b_l: T.Tensor((total_dim,), dtype),
         r: T.Tensor((num_tokens,), dtype),
-        grad_output: T.Tensor((num_tokens, total_dim), dtype),
+        grad_pre_out: T.Tensor((num_tokens, n), dtype),
+        grad_post_out: T.Tensor((num_tokens, n), dtype),
+        grad_res_out: T.Tensor((num_tokens, n * n), dtype),
         # outputs
         grad_H: T.Tensor((num_tokens, total_dim), dtype),
         grad_alpha_pre: T.Tensor((1,), dtype),
@@ -46,7 +48,7 @@ def fused_small_coefficients_bwd(n=4, dtype=T.float32,THREADS_PER_BLOCK = 128, T
 
             for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
                 if tid_start + lid < num_tokens:
-                    go = grad_output[tid_start + lid, dim_id]
+                    go = grad_pre_out[tid_start + lid, dim_id]
                     inv_r = 1/ r[tid_start + lid]
                     x = H[tid_start + lid, dim_id]
                     z = inv_r * a_pre * x + b_l[dim_id]
@@ -58,7 +60,7 @@ def fused_small_coefficients_bwd(n=4, dtype=T.float32,THREADS_PER_BLOCK = 128, T
                     T.atomic_add(grad_r_shared[lid], -dz * a_pre * x * inv_r * inv_r)
             for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
                 if tid_start + lid < num_tokens:
-                    go = grad_output[tid_start + lid, dim_id + n]
+                    go = grad_post_out[tid_start + lid, dim_id]
                     inv_r = 1/ r[tid_start + lid]
                     x = H[tid_start + lid, dim_id + n]
                     z = inv_r * a_post * x + b_l[dim_id + n]
@@ -70,7 +72,7 @@ def fused_small_coefficients_bwd(n=4, dtype=T.float32,THREADS_PER_BLOCK = 128, T
                     T.atomic_add(grad_r_shared[lid], -dz * a_post * x * inv_r * inv_r)
             for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n * n):
                 if tid_start + lid < num_tokens:
-                    go = grad_output[tid_start + lid, dim_id + 2 * n]
+                    go = grad_res_out[tid_start + lid, dim_id]
                     inv_r = 1/ r[tid_start + lid]
                     x = H[tid_start + lid, dim_id + 2 * n]
                     grad_H[tid_start + lid, dim_id + 2 * n] = go * inv_r * a_res
@@ -107,17 +109,20 @@ def test_bwd(num_tokens = 16 * 1024):
     b_l.requires_grad_(True)
     r.requires_grad_(True)
 
-    out = ref_compute(H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r, n=n)
-    grad_output = torch.randn_like(out) / 100.0  # small gradients to avoid numerical issues
+    ref_pre, ref_post, ref_res = ref_compute(H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r, n=n)
+    grad_pre_out = torch.randn_like(ref_pre) / 100.0  # small gradients to avoid numerical issues
+    grad_post_out = torch.randn_like(ref_post) / 100.0
+    grad_res_out = torch.randn_like(ref_res) / 100.0
 
-    out.backward(grad_output, retain_graph=True)
 
-    grad_H_ref = H.grad
-    grad_alpha_pre_ref = alpha_l_pre.grad
-    grad_alpha_post_ref = alpha_l_post.grad
-    grad_alpha_res_ref = alpha_l_res.grad
-    grad_b_l_ref = b_l.grad
-    grad_r_ref = r.grad
+    # out.backward(grad_output, retain_graph=True)
+    grad_H_ref, grad_alpha_pre_ref, grad_alpha_post_ref, grad_alpha_res_ref, grad_b_l_ref, grad_r_ref = \
+        torch.autograd.grad(
+            [ref_pre, ref_post, ref_res],
+            [H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r],
+            grad_outputs=[grad_pre_out, grad_post_out, grad_res_out],
+            retain_graph=True
+        )
 
     # TileLang backward
     jit_bwd = fused_small_coefficients_bwd(n=n)
@@ -142,7 +147,9 @@ def test_bwd(num_tokens = 16 * 1024):
         alpha_l_res,
         b_l,
         r,
-        grad_output,
+        grad_pre_out, 
+        grad_post_out,
+        grad_res_out,
         grad_H_tl,
         grad_alpha_pre_tl,
         grad_alpha_post_tl,
@@ -168,7 +175,9 @@ def test_bwd(num_tokens = 16 * 1024):
             alpha_l_res,
             b_l,
             r,
-            grad_output,
+            grad_pre_out, 
+            grad_post_out,
+            grad_res_out,
             grad_H_tl,
             grad_alpha_pre_tl,
             grad_alpha_post_tl,
@@ -179,7 +188,12 @@ def test_bwd(num_tokens = 16 * 1024):
     bwd_latency = do_bench(run_bwd, warmup=10, rep=100)
     print(f"Backward latency: {bwd_latency} ms")
     def run_ref():
-        out.backward(grad_output, retain_graph=True)
+        torch.autograd.grad(
+            [ref_pre, ref_post, ref_res],
+            [H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r],
+            grad_outputs=[grad_pre_out, grad_post_out, grad_res_out],
+            retain_graph=True
+        )
     ref_latency = do_bench(run_ref, warmup=10, rep=100)
     print(f"Ref backward latency: {ref_latency} ms")
     

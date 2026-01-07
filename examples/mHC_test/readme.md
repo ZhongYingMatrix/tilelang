@@ -1,6 +1,6 @@
 # Unofficial Rough Implementation of mHC Kernel Fusion
 
-This directory contains unofficial, experimental implementations of operators related to mHC (micro Head Cache) kernel fusion. The implementations are based on TileLang and include several example scripts for validating functional correctness and performing simple benchmarking.
+This directory contains unofficial, experimental implementations of operators related to mHC kernel fusion. The implementations are based on TileLang and include several example scripts for validating functional correctness and performing simple benchmarking.
 
 ## Directory Description
 
@@ -42,12 +42,12 @@ If you only want to run a quick small-scale verification, you can modify the arg
 
 | Num Tokens | Forward Latency (ms) | Reference Forward (ms) | Forward Speedup | Backward Latency (ms) | Reference Backward (ms) | Backward Speedup |
 |------------|----------------------|------------------------|------------------|------------------------|--------------------------|-------------------|
-| 1          | 0.0047               | 0.0518                 | 10.92×           | 0.0081                 | 0.3656                   | 45.00×            |
-| 16         | 0.0049               | 0.0506                 | 10.32×           | 0.0194                 | 0.3763                   | 19.42×            |
-| 1k         | 0.0051               | 0.0508                 | 9.92×            | 0.0416                 | 0.3813                   | 9.15×             |
-| 16k        | 0.0064               | 0.0504                 | 7.83×            | 0.0455                 | 0.3883                   | 8.54×             |
-| 64k        | 0.0094               | 0.0658                 | 6.98×            | 0.1149                 | 0.4000                   | 3.48×             |
-| 128k       | 0.0133               | 0.0945                 | 7.12×            | 0.2130                 | 0.4007                   | 1.88×             |
+| 1          | 0.0046               | 0.0270                 | 5.86×            | 0.0085                 | 0.3444                   | 40.52×            |
+| 16         | 0.0046               | 0.0274                 | 5.93×            | 0.0199                 | 0.3523                   | 17.70×            |
+| 1k         | 0.0049               | 0.0337                 | 6.83×            | 0.0412                 | 0.3606                   | 8.76×             |
+| 16k        | 0.0063               | 0.0373                 | 5.92×            | 0.0451                 | 0.3671                   | 8.14×             |
+| 64k        | 0.0092               | 0.0529                 | 5.77×            | 0.1150                 | 0.3867                   | 3.36×             |
+| 128k       | 0.0131               | 0.0735                 | 5.61×            | 0.2112                 | 0.3808                   | 1.80×             |
 
  Kernel Type: `sinkhorn_knopp`
 | Num Tokens | Forward Latency (ms) | Reference Forward (ms) | Forward Speedup | Backward Latency (ms) | Reference Backward (ms) | Backward Speedup |

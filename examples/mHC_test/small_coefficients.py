@@ -22,11 +22,7 @@ def ref_compute(H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r, n=4):
     hpre = torch.sigmoid(tlhpre)
     hpost = 2 * torch.sigmoid(tlhpost)
 
-    new_H = torch.empty_like(H)
-    new_H[:, : n] = hpre
-    new_H[:, n : 2 * n] = hpost
-    new_H[:, 2 * n :] = tlhres
-    return new_H
+    return hpre, hpost, tlhres
 
 @tl.jit(pass_configs={tl.PassConfigKey.TL_ENABLE_FAST_MATH: True,})
 def fused_small_coefficients(n=4, dtype=T.float32, THREADS_PER_BLOCK = 128, TOKENS_PER_BLOCK = 32):
@@ -41,19 +37,21 @@ def fused_small_coefficients(n=4, dtype=T.float32, THREADS_PER_BLOCK = 128, TOKE
         alpha_l_res: T.Tensor((1,), dtype),
         b_l: T.Tensor((total_dim,), dtype),
         r: T.Tensor((num_tokens,), dtype),
-        H_out: T.Tensor((num_tokens, total_dim), dtype),
+        pre_out: T.Tensor((num_tokens, n), dtype),
+        post_out: T.Tensor((num_tokens, n), dtype),
+        res_out: T.Tensor((num_tokens, n * n), dtype),
     ):
         with T.Kernel(T.ceildiv(num_tokens, TOKENS_PER_BLOCK), threads=THREADS_PER_BLOCK) as bx:
             tid_start = bx * TOKENS_PER_BLOCK
             a_pre, a_post, a_res = alpha_l_pre[0], alpha_l_post[0], alpha_l_res[0]     
             for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
-                H_out[tid_start + lid, dim_id] = T.sigmoid(
+                pre_out[tid_start + lid, dim_id] = T.sigmoid(
                     a_pre / r[tid_start + lid] * H[tid_start + lid, dim_id] + b_l[dim_id])
             for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n):
-                H_out[tid_start + lid, dim_id + n] = T.sigmoid(
+                post_out[tid_start + lid, dim_id] = T.sigmoid(
                     a_post / r[tid_start + lid] * H[tid_start + lid, dim_id + n] + b_l[dim_id + n]) * T.cast(2.0, dtype)
             for lid, dim_id in T.Parallel(TOKENS_PER_BLOCK, n * n):
-                H_out[tid_start + lid, dim_id + 2 * n] = \
+                res_out[tid_start + lid, dim_id] = \
                     a_res / r[tid_start + lid] * H[tid_start + lid, dim_id + 2 * n] + b_l[dim_id + 2 * n]
     return fused_small_coefficients_kernel
 
@@ -66,11 +64,11 @@ def main(num_tokens = 16 * 1024):
     alpha_l_res = torch.randn((1,), dtype=torch.float32).cuda()
     b_l = torch.randn((n * n + 2 * n,), dtype=torch.float32).cuda()
     r = torch.randn((num_tokens,), dtype=torch.float32).cuda()
-    ref_out = ref_compute(H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r, n=n)
+    ref_pre, ref_post, ref_res = ref_compute(H, alpha_l_pre, alpha_l_post, alpha_l_res, b_l, r, n=n)
 
     fused_kernel = fused_small_coefficients(n=n)
     # print(fused_kernel.get_kernel_source())
-    fused_out = torch.empty_like(H)
+    pre, post, res = torch.empty_like(ref_pre), torch.empty_like(ref_post), torch.empty_like(ref_res)
     fused_kernel(
         H,
         alpha_l_pre,
@@ -78,10 +76,14 @@ def main(num_tokens = 16 * 1024):
         alpha_l_res,
         b_l,
         r,
-        fused_out,
+        pre,
+        post,
+        res
     )
 
-    torch.testing.assert_close(fused_out, ref_out, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(pre, ref_pre, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(post, ref_post, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(res, ref_res, atol=1e-6, rtol=1e-6)
     print("Test passed!")
     
     from tilelang.profiler import do_bench
@@ -93,7 +95,9 @@ def main(num_tokens = 16 * 1024):
             alpha_l_res,
             b_l,
             r,
-            fused_out,
+            pre,
+            post,
+            res
         )
     fused_latency = do_bench(run_fused, warmup=10, rep=100)
     print(f"Fused latency: {fused_latency} ms")
