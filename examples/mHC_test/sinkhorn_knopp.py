@@ -12,6 +12,7 @@ def ref_compute(tlhres, n=4, num_iters=20):
     # tlhres: (num_tokens, n * n) fp32
     num_tokens = tlhres.shape[0]
     matrix = tlhres.view(num_tokens, n, n)
+    matrix = matrix.exp()
     for _ in range(num_iters):
         matrix = matrix / matrix.sum(dim=2, keepdim=True)
         matrix = matrix / matrix.sum(dim=1, keepdim=True)
@@ -48,7 +49,7 @@ def sinkhorn_knopp(
             for j in T.serial(n):
                 for k in T.serial(n):
                     if sample_id < num_tokens:
-                        matrix[j, k] = input_flat[sample_id, j * n + k]
+                        matrix[j, k] = T.exp(input_flat[sample_id, j * n + k])
                     else:
                         matrix[j, k] = T.float32(0.0)
 

@@ -39,7 +39,7 @@ def sinkhorn_knopp_bwd(
                 for k in T.serial(n):
                     flat_idx = j * n + k
                     if sample_id < num_tokens:
-                        X[j, k] = input_flat[sample_id, flat_idx]
+                        X[j, k] = T.exp(input_flat[sample_id, flat_idx])
                         dX[j, k] = grad_output_flat[sample_id, flat_idx]
                     else:
                         X[j, k] = T.float32(0.0)
@@ -132,7 +132,7 @@ def sinkhorn_knopp_bwd(
                 for k in T.serial(n):
                     flat_idx = j * n + k
                     if sample_id < num_tokens:
-                        grad_input_flat[sample_id, flat_idx] = dX[j, k]
+                        grad_input_flat[sample_id, flat_idx] = dX[j, k] * X[j, k]
 
     return sinkhorn_knopp_bwd_kernel
 
