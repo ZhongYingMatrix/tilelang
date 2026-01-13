@@ -8,6 +8,8 @@ This directory contains unofficial, experimental implementations of operators re
 - `sinkhorn_knopp_bwd.py` — Corresponding backward/gradient implementation (for verifying backpropagation correctness).
 - `small_coefficients.py` — TileLang kernel (forward pass) that fuses operations related to small-coefficients, along with a reference implementation and benchmark.
 - `small_coefficients_bwd.py` — Backward implementation for small-coefficients.
+- `gemm_expsum.py` — TileLang kernel (forward pass) that fuses operations related to gemm_expsum, along with a reference implementation and benchmark.
+- `gemm_expsum_bwd.py` — Backward implementation for gemm_expsum.
 
 ## Quick Start
 
@@ -22,6 +24,7 @@ Run the example scripts from the repository root directory:
 ```bash
 python tilelang/examples/mHC_test/sinkhorn_knopp.py
 python tilelang/examples/mHC_test/small_coefficients.py
+...
 ```
 
 These scripts will:
@@ -37,6 +40,17 @@ If you only want to run a quick small-scale verification, you can modify the arg
 ## Performance Summary
 
 - Test Device: NVIDIA H20, Test Image: nvcr.io/nvidia/pytorch:25.11-py3
+
+ Kernel Type: `gemm_expsum`
+
+| Num Tokens | Forward Latency (ms) | Reference Forward (ms) | Forward Speedup | Backward Latency (ms) | Reference Backward (ms) | Backward Speedup |
+|------------|----------------------|------------------------|------------------|-----------------------|-------------------------|-------------------|
+| 1          | 0.0228               | 0.0288                 | 1.26×            | 0.0345                | 0.0979                  | 2.84×             |
+| 16         | 0.0231               | 0.0375                 | 1.62×            | 0.0351                | 0.0990                  | 2.82×             |
+| 1k         | 0.1267               | 0.3382                 | 2.67×            | 0.2660                | 0.5591                  | 2.10×             |
+| 16k        | 1.7670               | 4.7822                 | 2.71×            | 4.1307                | 8.2372                  | 1.99×             |
+| 64k        | 7.0311               | 18.3406                | 2.61×            | 16.5006               | 32.8566                 | 1.99×             |
+| 128k       | 14.0225              | 36.6704                | 2.62×            | 33.2023               | 65.9813                 | 1.99×             |
 
  Kernel Type: `small_coefficients`
 
