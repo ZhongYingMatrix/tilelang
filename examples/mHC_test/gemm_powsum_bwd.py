@@ -2,19 +2,19 @@ import tilelang as tl
 import tilelang.language as T
 import torch
 
-from gemm_expsum import ref_compute
+from gemm_powsum import ref_compute
 
 @tl.jit(
     pass_configs={tl.PassConfigKey.TL_ENABLE_FAST_MATH: True,}
 )
-def fused_gemm_expsum_bwd(n=4, C=7168, dtype=T.float32, THREADS_PER_BLOCK = 128, BLOCK_M = 128, BLOCK_N = 128):
+def fused_gemm_powsum_bwd(n=4, C=7168, dtype=T.float32, THREADS_PER_BLOCK = 128, BLOCK_M = 128, BLOCK_N = 128):
     num_tokens = T.symbolic("num_tokens")
     BLOCK_K = 32  # total_dim = n * n + 2 * n  -> 24
     x_dtype = T.bfloat16
     dtype = T.float32
     
     @T.prim_func
-    def fused_gemm_expsum_bwd_kernel(
+    def fused_gemm_powsum_bwd_kernel(
         x: T.Tensor((num_tokens, n * C), x_dtype),
         phi: T.Tensor((n * C, n * n + 2 * n), dtype),
         # H: T.Tensor((num_tokens, n * n + 2 * n), dtype),
@@ -75,7 +75,7 @@ def fused_gemm_expsum_bwd(n=4, C=7168, dtype=T.float32, THREADS_PER_BLOCK = 128,
             # Copy grad fhi
             T.copy(grad_phi_frag, grad_phi[bn * BLOCK_N, 0])
 
-    return fused_gemm_expsum_bwd_kernel
+    return fused_gemm_powsum_bwd_kernel
 
 
 def main(num_tokens=1024):
@@ -96,7 +96,7 @@ def main(num_tokens=1024):
         retain_graph=True
     )
     
-    bwd_kernel = fused_gemm_expsum_bwd(n=n, C=C)
+    bwd_kernel = fused_gemm_powsum_bwd(n=n, C=C)
     # print(bwd_kernel.get_kernel_source())
     # H = torch.zeros((num_tokens, n * n + 2 * n), dtype=torch.float32, device="cuda")
     r = torch.clone(ref_r)
@@ -113,7 +113,7 @@ def main(num_tokens=1024):
     
     
     from tilelang.profiler import do_bench
-    print("Benchmarking TileLang gemm expsum bwd kernel...")
+    print("Benchmarking TileLang gemm powsum bwd kernel...")
     latency = do_bench(
         lambda: bwd_kernel(x, phi, r, grad_H, grad_r, grad_x, grad_phi),
         warmup=10,
@@ -129,8 +129,8 @@ def main(num_tokens=1024):
         warmup=10,
         rep=100,
     )
-    print(f"TileLang gemm expsum bwd latency: {latency} ms")
-    print(f"Reference gemm expsum bwd latency: {ref_latency} ms")
+    print(f"TileLang gemm powsum bwd latency: {latency} ms")
+    print(f"Reference gemm powsum bwd latency: {ref_latency} ms")
     
 if __name__ == "__main__":
     main(num_tokens=1)

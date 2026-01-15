@@ -21,7 +21,7 @@ def ref_compute(x, phi):
     # out_idx=[-2, -1],
     pass_configs={tl.PassConfigKey.TL_ENABLE_FAST_MATH: True,}
 )
-def fused_gemm_expsum_split_k(n, C, dtype, THREADS_PER_BLOCK, BLOCK_M, BLOCK_K, split_k):
+def fused_gemm_powsum_split_k(n, C, dtype, THREADS_PER_BLOCK, BLOCK_M, BLOCK_K, split_k):
     num_tokens = T.symbolic("num_tokens")
     BLOCK_N = 32  # total_dim = n * n + 2 * n  -> 24
     x_dtype = T.bfloat16
@@ -31,7 +31,7 @@ def fused_gemm_expsum_split_k(n, C, dtype, THREADS_PER_BLOCK, BLOCK_M, BLOCK_K, 
     SplitK = T.ceildiv(n * C, split_k)
     
     @T.prim_func
-    def fused_gemm_expsum_kernel(
+    def fused_gemm_powsum_kernel(
         x: T.Tensor((num_tokens, n * C), x_dtype),
         phi: T.Tensor((n * C, n * n + 2 * n), dtype),
         H: T.Tensor((num_tokens, n * n + 2 * n), dtype),
@@ -77,7 +77,7 @@ def fused_gemm_expsum_split_k(n, C, dtype, THREADS_PER_BLOCK, BLOCK_M, BLOCK_K, 
                 # r[bx * BLOCK_M + m] = T.sqrt(r_shared[m] / (n * C))
                 T.atomic_add(r[bx * BLOCK_M + m], r_shared[m] / (n * C))
     
-    return fused_gemm_expsum_kernel
+    return fused_gemm_powsum_kernel
 
 @tl.jit(
     pass_configs={tl.PassConfigKey.TL_ENABLE_FAST_MATH: True,}
@@ -93,15 +93,15 @@ def post_sqrt(THREADS_PER_BLOCK = 128, BLOCK_M = 128):
                  r[bx * BLOCK_M + m] = T.sqrt(r[bx * BLOCK_M + m])
     return post_sqrt_kernel
 
-def fused_gemm_expsum(n=4, C=7168, dtype=T.float32, THREADS_PER_BLOCK = 128, BLOCK_M = 128, BLOCK_K = 32, split_k = 64):
-    k0 = fused_gemm_expsum_split_k(n, C, dtype, THREADS_PER_BLOCK, BLOCK_M, BLOCK_K, split_k)
+def fused_gemm_powsum(n=4, C=7168, dtype=T.float32, THREADS_PER_BLOCK = 128, BLOCK_M = 128, BLOCK_K = 32, split_k = 64):
+    k0 = fused_gemm_powsum_split_k(n, C, dtype, THREADS_PER_BLOCK, BLOCK_M, BLOCK_K, split_k)
     k1 = post_sqrt(THREADS_PER_BLOCK, BLOCK_M)
     
-    def fused_gemm_expsum_fn(x, phi, H, r):
+    def fused_gemm_powsum_fn(x, phi, H, r):
         k0(x, phi, H, r)
         k1(r)
         
-    return fused_gemm_expsum_fn
+    return fused_gemm_powsum_fn
 
 def main(num_tokens=1024):
     print(f"{num_tokens=}")
@@ -110,7 +110,7 @@ def main(num_tokens=1024):
     x = torch.randn((num_tokens, n * C), dtype=torch.bfloat16, device="cuda")
     phi = torch.randn((n * C, n * n + 2 * n), dtype=torch.float32, device="cuda")
     ref_H, ref_r = ref_compute(x, phi)
-    fused_kernel = fused_gemm_expsum(n=n, C=C)
+    fused_kernel = fused_gemm_powsum(n=n, C=C)
     # print(fused_kernel.get_kernel_source())
     H = torch.zeros((num_tokens, n * n + 2 * n), dtype=torch.float32, device="cuda")
     r = torch.zeros((num_tokens,), dtype=torch.float32, device="cuda")
@@ -121,7 +121,7 @@ def main(num_tokens=1024):
     
     
     from tilelang.profiler import do_bench
-    print("Benchmarking TileLang gemm expsum kernel...")
+    print("Benchmarking TileLang gemm powsum kernel...")
     latency = do_bench(
         lambda: fused_kernel(x, phi, H, r),
         warmup=10,
@@ -132,8 +132,8 @@ def main(num_tokens=1024):
         warmup=10,
         rep=100,
     )
-    print(f"TileLang gemm expsum latency: {latency} ms")
-    print(f"Reference gemm expsum latency: {ref_latency} ms")
+    print(f"TileLang gemm powsum latency: {latency} ms")
+    print(f"Reference gemm powsum latency: {ref_latency} ms")
     
 if __name__ == "__main__":
     main(num_tokens=1)

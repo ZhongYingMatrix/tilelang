@@ -8,8 +8,8 @@ This directory contains unofficial, experimental implementations of operators re
 - `sinkhorn_knopp_bwd.py` — Corresponding backward/gradient implementation (for verifying backpropagation correctness).
 - `small_coefficients.py` — TileLang kernel (forward pass) that fuses operations related to small-coefficients, along with a reference implementation and benchmark.
 - `small_coefficients_bwd.py` — Backward implementation for small-coefficients.
-- `gemm_expsum.py` — TileLang kernel (forward pass) that fuses operations related to gemm_expsum, along with a reference implementation and benchmark.
-- `gemm_expsum_bwd.py` — Backward implementation for gemm_expsum.
+- `gemm_powsum.py` — TileLang kernel (forward pass) that fuses operations related to gemm_powsum, along with a reference implementation and benchmark.
+- `gemm_powsum_bwd.py` — Backward implementation for gemm_powsum.
 
 ## Quick Start
 
@@ -41,7 +41,7 @@ If you only want to run a quick small-scale verification, you can modify the arg
 
 - Test Device: NVIDIA H20, Test Image: nvcr.io/nvidia/pytorch:25.11-py3
 
- Kernel Type: `gemm_expsum`
+ Kernel Type: `gemm_powsum`
 
 | Num Tokens | Forward Latency (ms) | Reference Forward (ms) | Forward Speedup | Backward Latency (ms) | Reference Backward (ms) | Backward Speedup |
 |------------|----------------------|------------------------|------------------|-----------------------|-------------------------|-------------------|
